@@ -71,6 +71,7 @@ footer b{color:var(--tx)}
   <div class="card">
     <h2>Base de CPFs já higienizados</h2>
     <p class="hint">Fica salva neste navegador e <b>não é apagada sozinha</b> (fica guardada por tempo indeterminado, bem além dos 2 meses). Baixe o backup de vez em quando.</p>
+    <div id="semBase" class="msg warn hidden"><b>A base está vazia neste computador/navegador.</b> O histórico não vem sozinho de outra máquina: clique em <b>Escolher pasta da base</b> e selecione a mesma pasta do OneDrive (sincronizada neste computador) que foi usada no outro. O histórico carrega na hora.</div>
     <div class="stats">
       <div class="st pri"><div class="v" id="hTotal">0</div><div class="l">CPFs na base</div></div>
       <div class="st"><div class="v" id="hPhone">0</div><div class="l">com telefone</div></div>
@@ -239,6 +240,7 @@ async function loadHist(){
 function renderHist(){
   let t=0,w=0,old=0;const lim=Date.now()-60*864e5;
   H.forEach(x=>{if(x.tel)t++;if(/^(s|sim|1|true|yes|x)/i.test(x.wpp||''))w++;if(x.ts&&x.ts<lim)old++});
+  $('semBase').classList.toggle('hidden',!(H.size===0&&!DIR));
   $('hTotal').textContent=num(H.size);$('hPhone').textContent=num(t);$('hWhats').textContent=num(w);$('hAntigo').textContent=num(old);
 }
 
@@ -687,12 +689,12 @@ $('btnClear').onclick=async()=>{
   if(!H.size)return;
   if(!confirm('Apagar TODA a base de higienizados deste navegador? Baixe o backup antes.'))return;
   await p(st_('hist','readwrite').clear());await p(st_('nv','readwrite').clear());
-  await loadHist();queueSave({hist:true,nv:true,config:true});if(L)analisar();
+  await loadHist();queueSave({hist:true,nv:true,config:true,noMerge:true});if(L)analisar();
 };
 
 
 /* ---------- Pasta de dados (backup em arquivo) ---------- */
-let DIR=null,dirt={hist:false,nv:false,config:false},saveTimer=null,saving=false;
+let DIR=null,dirt={hist:false,nv:false,config:false,noMerge:false},saveTimer=null,saving=false,lastPull=0;
 const F_HIST='base_cpfs.json',F_NV='base_nova_vida.json',F_CFG='base_config.json';
 const canDir=typeof window.showDirectoryPicker==='function';
 function dirMsg(t,bad){$('dirInfo').textContent=t;$('dirInfo').style.color=bad?'var(--bad)':''}
@@ -719,8 +721,10 @@ function queueSave(flags){
 async function doSave(){
   if(!DIR)return;
   if(saving){saveTimer=setTimeout(doSave,700);return}
-  saving=true;const d={...dirt};dirt={hist:false,nv:false,config:false};
+  saving=true;const d={...dirt};dirt={hist:false,nv:false,config:false,noMerge:false};
   try{
+    // antes de gravar, junta o que outra máquina possa ter salvo na pasta (evita sobrescrever)
+    if((d.hist||d.nv)&&!d.noMerge)await loadFromFolder();
     if(d.hist){
       const rows=[...H.values()].map(x=>[x.cpf,x.tel,x.wpp,x.procon||'',x.data,x.ts||0,x.status]);
       await writeParts(F_HIST,['{"v":1,"hist":[',...jsonChunks(rows,20000),']}']);
@@ -780,6 +784,14 @@ $('btnDir').onclick=async()=>{
     await attachDir(h,true);
   }catch(e){if(e.name!=='AbortError')dirMsg('Erro ao acessar a pasta: '+e.message,true)}
 };
+window.addEventListener('focus',async()=>{
+  if(!DIR||saving||Date.now()-lastPull<30000)return;
+  try{
+    if(DIR.queryPermission&&(await DIR.queryPermission({mode:'readwrite'}))!=='granted')return;
+    lastPull=Date.now();const n0=H.size;await loadFromFolder();
+    if(H.size>n0)dirMsg('Base atualizada com o que outra máquina salvou na pasta ('+num(H.size-n0)+' CPFs novos).');
+  }catch(e){}
+});
 async function initDir(){
   if(!canDir){$('btnDir').classList.add('hidden');dirMsg('Backup em pasta só funciona no Chrome ou Edge. Use o "Baixar backup" manual.');return}
   let h=null;try{h=await kvGet('dir')}catch(e){}
